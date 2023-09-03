@@ -128,11 +128,9 @@ async fn main() {
         let _ = tokio::signal::ctrl_c().await;
         eprintln!("Initiating graceful shutdown");
     };
-    Server::bind(&config.bind())
-        .serve(router.into_make_service())
-        .with_graceful_shutdown(signal)
-        .await
-        .unwrap();
+    let server = Server::bind(&config.bind()).serve(router.into_make_service());
+    eprintln!("Listening on {}", server.local_addr());
+    server.with_graceful_shutdown(signal).await.unwrap();
 }
 
 async fn deploy(
