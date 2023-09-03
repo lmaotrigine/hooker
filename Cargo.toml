@@ -1,12 +1,16 @@
 [package]
 name = "hooker"
+description = "Webhook proxy for automatic docker deployments"
+license = "MPL-2.0"
+repository = "https://github.com/lmaotrigine/hooker"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-axum = { version = "0.6.20", default-features = false, features = ["tokio", "macros"] }
+axum = { version = "0.6.20", default-features = false, features = ["tokio"] }
 hmac = "0.12.1"
 reqwest = { version = "0.11.20", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.188", features = ["derive"] }

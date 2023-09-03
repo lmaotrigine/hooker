@@ -1,9 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::all, clippy::pedantic, clippy::nursery)]
-#![allow(clippy::items_after_statements, clippy::diverging_sub_expression)]
 
-use std::str::FromStr;
-
+use crate::config::Config;
 use axum::{
     body::Bytes,
     extract::{FromRequestParts, State},
@@ -15,9 +13,8 @@ use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde_json::Value;
 use sha2::Sha256;
+use std::{borrow::Cow, str::FromStr};
 use tokio::process::Command;
-
-use crate::config::Config;
 
 mod config;
 
@@ -138,16 +135,18 @@ async fn main() {
         .unwrap();
 }
 
-#[axum::debug_handler]
 async fn deploy(
     State(config): State<Config>,
     Extension(client): Extension<Client>,
     request_secret: Secret,
     body: Bytes,
-) -> Result<(), (StatusCode, &'static str)> {
+) -> Result<(), (StatusCode, Cow<'static, str>)> {
     let secret = config
         .secret()
-        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "No secret configured"))?
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "No secret configured".into(),
+        ))?
         .as_bytes();
     let sha = Hmac::<Sha256>::new_from_slice(secret)
         .unwrap()
@@ -156,11 +155,15 @@ async fn deploy(
         .into_bytes()
         .encode_hex::<String>();
     if sha != request_secret.value() {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid signature"));
+        return Err((StatusCode::UNAUTHORIZED, "Invalid signature".into()));
     }
     let raw = String::from_utf8_lossy(body.as_ref());
-    let payload = Value::from_str(&raw)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid JSON in request body"))?;
+    let payload = Value::from_str(&raw).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Invalid JSON in request body".into(),
+        )
+    })?;
     if payload["action"] == "completed"
         && payload["workflow_run"]["name"] == ".github/workflows/docker.yml"
     {
@@ -172,34 +175,37 @@ async fn deploy(
             .map_err(|_| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to run docker pull",
+                    "Failed to run docker pull".into(),
                 )
             })?;
         if !cmd.status.success() {
-            eprintln!(
-                "docker pull failed: {}",
-                String::from_utf8_lossy(&cmd.stderr)
-            );
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "docker pull failed"));
+            let stderr = String::from_utf8_lossy(&cmd.stderr);
+            eprintln!("docker pull failed: {stderr}");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("docker pull failed: {stderr}").into(),
+            ));
         }
-        client
+        let resp = client
             .post(config.forward_to())
             .header("X-Hub-Signature-256", &format!("sha256={sha}"))
             .body(body)
             .send()
             .await
-            .map_err(|_| (StatusCode::BAD_GATEWAY, "Failed to forward request."))?
-            .error_for_status()
-            .map_err(|e| {
-                eprintln!("Forwarding request failed: {e}");
-                let status = e.status().unwrap_or(StatusCode::BAD_GATEWAY);
-                (
-                    status,
-                    status
-                        .canonical_reason()
-                        .unwrap_or("Error forwarding request"),
-                )
-            })?;
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "Failed to forward request.".into()))?;
+        return Err((
+            resp.status(),
+            resp.text()
+                .await
+                .map_err(|e| {
+                    eprintln!("Got malformed/non-text response from downstream: {e:?}");
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        "Failed to read response body".into(),
+                    )
+                })?
+                .into(),
+        ));
     }
     Ok(())
 }
