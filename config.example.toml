@@ -1,0 +1,3 @@
+bind = "127.0.0.1:9009"
+forward_to = "https://somewhere.else.com/route"
+secret = "openssl rand -base64 45 | sed 's/[/+=]//g'"

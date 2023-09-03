@@ -1,0 +1,16 @@
+[package]
+name = "hooker"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+axum = { version = "0.6.20", default-features = false, features = ["tokio", "macros"] }
+hmac = "0.12.1"
+reqwest = { version = "0.11.20", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0.188", features = ["derive"] }
+serde_json = "1.0.105"
+sha2 = "0.10.7"
+tokio = { version = "1.32.0", features = ["rt-multi-thread", "macros", "process", "signal"] }
+toml = { version = "0.7.6", default-features = false, features = ["parse"] }
