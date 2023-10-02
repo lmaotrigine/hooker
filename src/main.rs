@@ -180,7 +180,7 @@ async fn deploy(
     State(config): State<Config>,
     request_secret: Secret,
     body: Bytes,
-) -> Result<(StatusCode, &'static str), Error> {
+) -> Result<&'static str, Error> {
     let secret = config
         .secret()
         .ok_or((
@@ -212,12 +212,9 @@ async fn deploy(
                 .await
                 .map_err(|e| error!("Unhandled error: {e:?}"))
         });
-        return Ok((
-            StatusCode::OK,
-            "Pulling new images. Check server logs for progress.",
-        ));
+        return Ok("Pulling new images. Check server logs for progress.");
     }
-    Ok((StatusCode::NOT_MODIFIED, "No action taken."))
+    Ok("No action taken.")
 }
 
 async fn run_compose_up(config: Config) -> Result<(), std::io::Error> {
