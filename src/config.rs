@@ -3,13 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use serde::Deserialize;
-use std::{fmt::Display, fs::read_to_string, net::SocketAddr};
+use std::{fmt::Display, fs::read_to_string, net::SocketAddr, path::PathBuf};
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     bind: SocketAddr,
+    compose_file: PathBuf,
     secret: Option<String>,
-    forward_to: String,
 }
 
 #[derive(Debug)]
@@ -38,6 +38,16 @@ impl Display for Error {
         }
     }
 }
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::TomlDe(e) => Some(e),
+        }
+    }
+}
+
 impl Config {
     pub fn try_new() -> Result<Self, Error> {
         let file = read_to_string("config.toml")?;
@@ -53,7 +63,7 @@ impl Config {
         self.bind
     }
 
-    pub fn forward_to(&self) -> &str {
-        &self.forward_to
+    pub const fn compose_file(&self) -> &PathBuf {
+        &self.compose_file
     }
 }

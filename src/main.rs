@@ -9,18 +9,24 @@ use crate::config::Config;
 use axum::{
     body::Bytes,
     extract::{FromRequestParts, State},
-    http::{request::Parts, StatusCode},
+    http::{request::Parts, Request, StatusCode},
+    middleware::{self, Next},
+    response::Response,
     routing::post,
-    Extension, Router, Server,
+    RequestExt, Router, Server,
 };
+use axum_realip::RealIp;
+use color_eyre::eyre::Context;
 use hmac::{Hmac, Mac};
-use reqwest::Client;
 use serde_json::Value;
 use sha2::Sha256;
-use std::{borrow::Cow, str::FromStr};
+use std::{borrow::Cow, net::SocketAddr, str::FromStr};
 use tokio::process::Command;
+use tracing::{error, warn};
 
 mod config;
+
+type Error = (StatusCode, Cow<'static, str>);
 
 struct Secret(String);
 
@@ -122,27 +128,58 @@ impl<T: AsRef<[u8]>> ToHex for T {
 }
 
 #[tokio::main]
-async fn main() {
-    let config = Config::try_new().expect("Failed to load config");
+async fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
+    tracing_subscriber::fmt::init();
+    let config = Config::try_new().wrap_err("Failed to load config")?;
     let router = Router::new()
         .route("/.well-known/deploy", post(deploy))
-        .layer(Extension(reqwest::Client::new()))
+        .layer(middleware::from_fn(handle_errors_middleware))
         .with_state(config.clone());
     let signal = async {
         let _ = tokio::signal::ctrl_c().await;
-        eprintln!("Initiating graceful shutdown");
+        warn!("Initiating graceful shutdown");
     };
-    let server = Server::bind(&config.bind()).serve(router.into_make_service());
+    let server = Server::bind(&config.bind())
+        .serve(router.into_make_service_with_connect_info::<SocketAddr>());
     eprintln!("Listening on {}", server.local_addr());
-    server.with_graceful_shutdown(signal).await.unwrap();
+    server.with_graceful_shutdown(signal).await?;
+    Ok(())
+}
+
+async fn handle_errors_middleware<B: Send + std::fmt::Debug + 'static>(
+    mut req: Request<B>,
+    next: Next<B>,
+) -> Result<Response, Error> {
+    let path = req.uri().path().to_owned();
+    let method = req.method().clone();
+    let ip = match req.extract_parts::<RealIp>().await {
+        Ok(RealIp(ip)) => ip,
+        Err(e) => {
+            error!("Failed to get real IP from request: {e:?}\n{req:#?}");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".into(),
+            ));
+        }
+    };
+    let headers = req.headers().clone();
+    let resp = next.run(req).await;
+    let status = resp.status();
+    if status == StatusCode::OK {
+        Ok(resp)
+    } else {
+        let code = status.as_u16();
+        warn!("Returned {code} to {ip} - tried to {method} {path} with headers {headers:?}");
+        Err((status, status.canonical_reason().unwrap_or_default().into()))
+    }
 }
 
 async fn deploy(
     State(config): State<Config>,
-    Extension(client): Extension<Client>,
     request_secret: Secret,
     body: Bytes,
-) -> Result<(), (StatusCode, Cow<'static, str>)> {
+) -> Result<(), Error> {
     let secret = config
         .secret()
         .ok_or((
@@ -169,9 +206,14 @@ async fn deploy(
     if payload["action"] == "completed"
         && payload["workflow_run"]["name"] == ".github/workflows/docker.yml"
     {
-        let repo = payload["repository"]["full_name"].as_str().unwrap();
         let cmd = Command::new("docker")
-            .args(["pull", &format!("ghcr.io/{repo}:latest")])
+            .args([
+                "compose",
+                "-f",
+                config.compose_file().to_str().unwrap(),
+                "up",
+                "-d",
+            ])
             .output()
             .await
             .map_err(|_| {
@@ -188,26 +230,6 @@ async fn deploy(
                 format!("docker pull failed: {stderr}").into(),
             ));
         }
-        let resp = client
-            .post(config.forward_to())
-            .header("X-Hub-Signature-256", &format!("sha256={sha}"))
-            .body(body)
-            .send()
-            .await
-            .map_err(|_| (StatusCode::BAD_GATEWAY, "Failed to forward request.".into()))?;
-        return Err((
-            resp.status(),
-            resp.text()
-                .await
-                .map_err(|e| {
-                    eprintln!("Got malformed/non-text response from downstream: {e:?}");
-                    (
-                        StatusCode::BAD_GATEWAY,
-                        "Failed to read response body".into(),
-                    )
-                })?
-                .into(),
-        ));
     }
     Ok(())
 }
