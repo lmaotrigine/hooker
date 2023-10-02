@@ -175,11 +175,12 @@ async fn handle_errors_middleware<B: Send + std::fmt::Debug + 'static>(
     }
 }
 
+#[allow(clippy::unused_async)] // axum requires this
 async fn deploy(
     State(config): State<Config>,
     request_secret: Secret,
     body: Bytes,
-) -> Result<(), Error> {
+) -> Result<(StatusCode, &'static str), Error> {
     let secret = config
         .secret()
         .ok_or((
@@ -206,30 +207,32 @@ async fn deploy(
     if payload["action"] == "completed"
         && payload["workflow_run"]["name"] == ".github/workflows/docker.yml"
     {
-        let cmd = Command::new("docker")
-            .args([
-                "compose",
-                "-f",
-                config.compose_file().to_str().unwrap(),
-                "up",
-                "-d",
-            ])
-            .output()
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to run docker pull".into(),
-                )
-            })?;
-        if !cmd.status.success() {
-            let stderr = String::from_utf8_lossy(&cmd.stderr);
-            error!("docker pull failed: {stderr}");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("docker pull failed: {stderr}").into(),
-            ));
-        }
+        tokio::spawn(async {
+            run_compose_up(config)
+                .await
+                .map_err(|e| error!("Unhandled error: {e:?}"))
+        });
+        return Ok((
+            StatusCode::OK,
+            "Pulling new images. Check server logs for progress.",
+        ));
+    }
+    Ok((StatusCode::NOT_MODIFIED, "No action taken."))
+}
+
+async fn run_compose_up(config: Config) -> Result<(), std::io::Error> {
+    let compose_file = config.compose_file().to_str().unwrap();
+    let cmd = Command::new("docker")
+        .args(["compose", "-f", compose_file, "up", "-d"])
+        .output()
+        .await?;
+    if !cmd.status.success() {
+        let stderr = String::from_utf8_lossy(&cmd.stderr);
+        error!("docker compose up failed: {stderr}");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("docker compose up failed: {stderr}"),
+        ));
     }
     Ok(())
 }
