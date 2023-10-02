@@ -22,7 +22,7 @@ use serde_json::Value;
 use sha2::Sha256;
 use std::{borrow::Cow, net::SocketAddr, str::FromStr};
 use tokio::process::Command;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 mod config;
 
@@ -142,7 +142,7 @@ async fn main() -> color_eyre::Result<()> {
     };
     let server = Server::bind(&config.bind())
         .serve(router.into_make_service_with_connect_info::<SocketAddr>());
-    eprintln!("Listening on {}", server.local_addr());
+    info!("Listening on {}", server.local_addr());
     server.with_graceful_shutdown(signal).await?;
     Ok(())
 }
@@ -224,7 +224,7 @@ async fn deploy(
             })?;
         if !cmd.status.success() {
             let stderr = String::from_utf8_lossy(&cmd.stderr);
-            eprintln!("docker pull failed: {stderr}");
+            error!("docker pull failed: {stderr}");
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("docker pull failed: {stderr}").into(),
